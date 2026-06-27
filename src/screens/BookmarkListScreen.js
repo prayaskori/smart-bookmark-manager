@@ -383,14 +383,7 @@ export default function BookmarkListScreen({ navigation }) {
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.confirmDeleteBtn} onPress={confirmDelete}>
-                <LinearGradient
-                  colors={['#dc2626', '#991b1b']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.confirmDeleteBtnGradient}
-                >
-                  <Text style={styles.confirmDeleteBtnText}>Delete</Text>
-                </LinearGradient>
+                <Text style={styles.confirmDeleteBtnText}>Delete</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -627,17 +620,14 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 48,
     borderRadius: 12,
-    overflow: 'hidden',
+    backgroundColor: '#dc2626',
+    justifyContent: 'center',
+    alignItems: 'center',
     shadowColor: '#dc2626',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 4,
-  },
-  confirmDeleteBtnGradient: {
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   confirmDeleteBtnText: {
     color: '#ffffff',
