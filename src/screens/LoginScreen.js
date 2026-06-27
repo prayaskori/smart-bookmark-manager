@@ -43,40 +43,48 @@ export default function LoginScreen() {
     }).start();
   };
 
+  const showAlert = (title, message) => {
+    if (Platform.OS === 'web') {
+      alert(`${title}: ${message}`);
+    } else {
+      Alert.alert(title, message);
+    }
+  };
+
   const validateInputs = () => {
     if (!email.trim() || !password.trim()) {
-      Alert.alert('Required Fields', 'Please enter both your email address and password.');
+      showAlert('Required Fields', 'Please enter both your email address and password.');
       return false;
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email.trim())) {
-      Alert.alert('Invalid Email', 'Please enter a valid email address (e.g., name@domain.com).');
+      showAlert('Invalid Email', 'Please enter a valid email address (e.g., name@domain.com).');
       return false;
     }
     if (isSignUp) {
       if (password.length < 10) {
-        Alert.alert('Weak Password', 'Password must be at least 10 characters long.');
+        showAlert('Weak Password', 'Password must be at least 10 characters long.');
         return false;
       }
       if (!/[A-Z]/.test(password)) {
-        Alert.alert('Weak Password', 'Password must contain at least one uppercase letter.');
+        showAlert('Weak Password', 'Password must contain at least one uppercase letter.');
         return false;
       }
       if (!/[a-z]/.test(password)) {
-        Alert.alert('Weak Password', 'Password must contain at least one lowercase letter.');
+        showAlert('Weak Password', 'Password must contain at least one lowercase letter.');
         return false;
       }
       if (!/[0-9]/.test(password)) {
-        Alert.alert('Weak Password', 'Password must contain at least one number.');
+        showAlert('Weak Password', 'Password must contain at least one number.');
         return false;
       }
       if (!/[!@#$%^&*(),.?":{}|<>\-_]/.test(password)) {
-        Alert.alert('Weak Password', 'Password must contain at least one special character (e.g., !, @, #, $, etc.).');
+        showAlert('Weak Password', 'Password must contain at least one special character (e.g., !, @, #, $, etc.).');
         return false;
       }
     } else {
       if (password.length < 6) {
-        Alert.alert('Weak Password', 'Password must be at least 6 characters long.');
+        showAlert('Weak Password', 'Password must be at least 6 characters long.');
         return false;
       }
     }
@@ -97,9 +105,9 @@ export default function LoginScreen() {
         if (error) throw error;
 
         if (data.session) {
-          Alert.alert('Welcome!', 'Your account has been created successfully!');
+          showAlert('Welcome!', 'Your account has been created successfully!');
         } else {
-          Alert.alert(
+          showAlert(
             'Verification Required',
             'A confirmation link has been sent to your email. Please verify your email to log in.'
           );
@@ -114,12 +122,12 @@ export default function LoginScreen() {
 
         if (error) {
           if (error.message && error.message.includes('Invalid login credentials')) {
-            Alert.alert(
+            showAlert(
               'Password Mismatch',
               'The password you entered is incorrect or does not match the registered email. Please check your credentials and try again.'
             );
           } else {
-            Alert.alert(
+            showAlert(
               'Authentication Failed',
               error.message || 'An error occurred during authentication.'
             );
@@ -128,7 +136,7 @@ export default function LoginScreen() {
         }
       }
     } catch (error) {
-      Alert.alert('Authentication Failed', error.message || 'An error occurred during authentication.');
+      showAlert('Authentication Failed', error.message || 'An error occurred during authentication.');
     } finally {
       setLoading(false);
     }
@@ -150,7 +158,7 @@ export default function LoginScreen() {
 
       if (error) throw error;
     } catch (error) {
-      Alert.alert('Google Sign-In Failed', error.message || 'Could not authenticate with Google.');
+      showAlert('Google Sign-In Failed', error.message || 'Could not authenticate with Google.');
     } finally {
       setLoading(false);
     }
