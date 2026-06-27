@@ -14,6 +14,7 @@ import {
   Animated,
   Dimensions,
   Platform,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../config/supabase';
@@ -44,17 +45,13 @@ export default function BookmarkListScreen({ navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState('All');
 
-  // Delete Confirmation Bottom Sheet States
+  // Delete Confirmation Modal States
   const [deleteTargetId, setDeleteTargetId] = useState(null);
   const [showBottomSheet, setShowBottomSheet] = useState(false);
 
   // AI Summary Bottom Sheet States
   const [summaryVisible, setSummaryVisible] = useState(false);
   const [summaryBookmark, setSummaryBookmark] = useState(null);
-
-  // Bottom Sheet Slide & Opacity animations
-  const bottomSheetY = useRef(new Animated.Value(screenHeight)).current;
-  const deleteOverlayOpacity = useRef(new Animated.Value(0)).current;
 
   // Offline cache loader
   const loadCache = async () => {
@@ -195,42 +192,16 @@ export default function BookmarkListScreen({ navigation }) {
     setSummaryVisible(true);
   };
 
-  // Open the delete confirmation bottom sheet
+  // Open the delete confirmation modal
   const triggerDeleteConfirm = (id) => {
     setDeleteTargetId(id);
     setShowBottomSheet(true);
-    Animated.parallel([
-      Animated.spring(bottomSheetY, {
-        toValue: 0,
-        tension: 60,
-        friction: 8,
-        useNativeDriver: true,
-      }),
-      Animated.timing(deleteOverlayOpacity, {
-        toValue: 1,
-        duration: 250,
-        useNativeDriver: true,
-      }),
-    ]).start();
   };
 
-  // Dismiss the delete bottom sheet
+  // Dismiss the delete modal
   const dismissBottomSheet = () => {
-    Animated.parallel([
-      Animated.timing(bottomSheetY, {
-        toValue: screenHeight,
-        duration: 250,
-        useNativeDriver: true,
-      }),
-      Animated.timing(deleteOverlayOpacity, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setShowBottomSheet(false);
-      setDeleteTargetId(null);
-    });
+    setShowBottomSheet(false);
+    setDeleteTargetId(null);
   };
 
   const confirmDelete = async () => {
@@ -399,40 +370,35 @@ export default function BookmarkListScreen({ navigation }) {
         }
       />
 
-      {/* Delete Confirmation – always rendered, hidden via opacity + pointerEvents */}
-      <Animated.View
-        style={[styles.deleteSheetWrapper, { opacity: deleteOverlayOpacity }]}
-        pointerEvents={showBottomSheet ? 'box-none' : 'none'}
+      {/* Delete Confirmation Modal — renders at root level, works on web + native */}
+      <Modal
+        visible={showBottomSheet}
+        transparent
+        animationType="slide"
+        onRequestClose={dismissBottomSheet}
       >
-        {/* Dark backdrop — sits behind the panel */}
         <TouchableOpacity
-          style={[StyleSheet.absoluteFill, { zIndex: 0 }]}
+          style={styles.modalBackdrop}
           onPress={dismissBottomSheet}
           activeOpacity={1}
-        />
-
-        {/* Sheet panel — zIndex above backdrop so buttons are tappable */}
-        <Animated.View
-          style={[
-            styles.deleteSheetPanel,
-            { transform: [{ translateY: bottomSheetY }], zIndex: 1 },
-          ]}
         >
-          <View style={styles.bottomSheetHandle} />
-          <Text style={styles.bottomSheetTitle}>Delete this bookmark?</Text>
-          <Text style={styles.bottomSheetSub}>This action is permanent and cannot be undone.</Text>
+          <View style={styles.deleteModalPanel}>
+            <View style={styles.bottomSheetHandle} />
+            <Text style={styles.bottomSheetTitle}>Delete this bookmark?</Text>
+            <Text style={styles.bottomSheetSub}>This action is permanent and cannot be undone.</Text>
 
-          <View style={styles.bottomSheetActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={dismissBottomSheet} activeOpacity={0.8}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </TouchableOpacity>
+            <View style={styles.bottomSheetActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={dismissBottomSheet} activeOpacity={0.8}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity style={styles.confirmDeleteBtn} onPress={confirmDelete} activeOpacity={0.8}>
-              <Text style={styles.confirmDeleteBtnText}>Delete</Text>
-            </TouchableOpacity>
+              <TouchableOpacity style={styles.confirmDeleteBtn} onPress={confirmDelete} activeOpacity={0.8}>
+                <Text style={styles.confirmDeleteBtnText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </Animated.View>
-      </Animated.View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* AI Summary Bottom Sheet */}
       <AISummarySheet
@@ -635,13 +601,26 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 24,
   },
-  // Delete sheet uses flex layout so buttons are never covered by overlay
-  deleteSheetWrapper: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 9999,
-    elevation: 9999,
+  // Modal-based delete confirmation (works on web + native)
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+  },
+  deleteModalPanel: {
+    backgroundColor: '#13131a',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    paddingHorizontal: 24,
+    paddingBottom: Platform.OS === 'ios' ? 42 : 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 24,
   },
   deleteSheetPanel: {
     backgroundColor: '#13131a',
