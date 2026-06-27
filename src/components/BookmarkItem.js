@@ -143,9 +143,13 @@ export default function BookmarkItem({ item, onDelete, onLongPress }) {
             <View style={[styles.tagBadge, { backgroundColor: tagColor + '20', borderColor: tagColor + '40' }]}>
               <Text style={[styles.tagBadgeText, { color: tagColor }]}>{item.tag || 'Other'}</Text>
             </View>
-            <View style={styles.chevronWrapper}>
+            <TouchableOpacity
+              style={styles.chevronWrapper}
+              onPress={() => onLongPress && onLongPress(item)}
+              activeOpacity={0.6}
+            >
               <Ionicons name="chevron-forward" size={16} color="#4b5563" />
-            </View>
+            </TouchableOpacity>
           </View>
         </View>
       </Animated.View>
