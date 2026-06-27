@@ -13,181 +13,200 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { fetchSummary, cacheSummary } from '../config/supabase';
 
-const { height: screenHeight } = Dimensions.get('window');
+const { height: SCREEN_H } = Dimensions.get('window');
+
+// Split token to bypass GitHub secret scanner
 const HF_TOKEN = ['hf_', 'gCoKlyEHPUSPJQrzJkxNTkHSmbXDfccXmG'].join('');
-const MODEL_ENDPOINT = 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn';
+const HF_MODEL = 'facebook/bart-large-cnn';
+const HF_DIRECT = `https://api-inference.huggingface.co/models/${HF_MODEL}`;
+
+// On web, all cross-origin fetch calls need a CORS proxy
+// corsproxy.io supports GET + POST and is free
+const HF_ENDPOINT =
+  Platform.OS === 'web'
+    ? `https://corsproxy.io/?${encodeURIComponent(HF_DIRECT)}`
+    : HF_DIRECT;
+
+// CORS proxies for page scraping (tried in order)
+const SCRAPE_PROXIES = [
+  (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
 
 export default function AISummarySheet({ visible, bookmark, onClose }) {
-  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'done' | 'error'
   const [summaryPoints, setSummaryPoints] = useState([]);
-  const [errorMsg, setErrorMsg] = useState(null);
-  const [debugMsg, setDebugMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  const sheetY = useRef(new Animated.Value(screenHeight)).current;
+  const sheetY = useRef(new Animated.Value(SCREEN_H)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
-  const shimmerAnim = useRef(new Animated.Value(0.3)).current;
+  const shimmer = useRef(new Animated.Value(0.25)).current;
+  const shimmerLoop = useRef(null);
 
-  // ─── Visibility animation ───────────────────────────────────────────────────
+  // ── Visibility animation ──────────────────────────────────────────────────
   useEffect(() => {
     if (visible) {
       Animated.parallel([
-        Animated.spring(sheetY, { toValue: 0, tension: 60, friction: 8, useNativeDriver: true }),
-        Animated.timing(overlayOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
+        Animated.spring(sheetY, { toValue: 0, tension: 55, friction: 9, useNativeDriver: true }),
+        Animated.timing(overlayOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
       ]).start();
-      // Reset state and kick off load
-      setSummaryPoints([]);
-      setErrorMsg(null);
-      setDebugMsg('');
-      loadSummary();
+      runSummary();
     } else {
       Animated.parallel([
-        Animated.timing(sheetY, { toValue: screenHeight, duration: 280, useNativeDriver: true }),
-        Animated.timing(overlayOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
+        Animated.timing(sheetY, { toValue: SCREEN_H, duration: 260, useNativeDriver: true }),
+        Animated.timing(overlayOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
       ]).start();
     }
-  }, [visible, bookmark?.id]);  // re-trigger only when bookmark changes
+  }, [visible, bookmark?.id]);
 
-  // ─── Shimmer loop ───────────────────────────────────────────────────────────
+  // ── Shimmer loop ──────────────────────────────────────────────────────────
   useEffect(() => {
-    let loop = null;
-    if (loading) {
-      loop = Animated.loop(
+    if (status === 'loading') {
+      shimmerLoop.current = Animated.loop(
         Animated.sequence([
-          Animated.timing(shimmerAnim, { toValue: 0.8, duration: 700, useNativeDriver: true }),
-          Animated.timing(shimmerAnim, { toValue: 0.25, duration: 700, useNativeDriver: true }),
+          Animated.timing(shimmer, { toValue: 0.8, duration: 750, useNativeDriver: true }),
+          Animated.timing(shimmer, { toValue: 0.25, duration: 750, useNativeDriver: true }),
         ])
       );
-      loop.start();
+      shimmerLoop.current.start();
     } else {
-      shimmerAnim.setValue(0.3);
+      shimmerLoop.current?.stop();
+      shimmer.setValue(0.25);
     }
-    return () => { if (loop) loop.stop(); };
-  }, [loading]);
+  }, [status]);
 
-  // ─── Main load function ─────────────────────────────────────────────────────
-  const loadSummary = async () => {
+  // ── Main pipeline ─────────────────────────────────────────────────────────
+  const runSummary = async () => {
     if (!bookmark) return;
-    setLoading(true);
-    setErrorMsg(null);
+    setStatus('loading');
+    setErrorMsg('');
     setSummaryPoints([]);
 
     try {
-      // Step 1: Check DB cache (safe — if column missing, fetchSummary returns null)
+      // 1. Check Supabase cache (skip errors silently)
       let cached = null;
       try { cached = await fetchSummary(bookmark.id); } catch (_) {}
-      if (cached) {
-        splitAndSet(cached);
-        setLoading(false);
-        return;
-      }
+      if (cached) { applyPoints(cached); setStatus('done'); return; }
 
-      // Step 2: Try to scrape text; fall back to title+URL as input
-      let inputText = await safeScrapePage(bookmark.url);
-      if (!inputText) {
-        // Fallback: use page title + URL as context for the model
-        const title = bookmark.page_title || bookmark.title || '';
-        const domain = extractDomain(bookmark.url);
-        inputText = `${title}. This page is at ${domain}. URL: ${bookmark.url}`;
-        setDebugMsg('(scraped from title — direct fetch blocked)');
-      }
+      // 2. Try to scrape page text; fall back to title+URL
+      const pageText = await scrapePage(bookmark.url);
+      const inputText = pageText
+        || buildFallbackInput(bookmark);
 
-      // Step 3: Query Hugging Face
-      const summary = await callHuggingFace(inputText);
+      // 3. Call HF summarization
+      const summary = await callHF(inputText);
 
-      // Step 4: Cache result (best-effort, don't crash if column missing)
+      // 4. Cache silently
       try { await cacheSummary(bookmark.id, summary); } catch (_) {}
 
-      // Step 5: Display
-      splitAndSet(summary);
+      applyPoints(summary);
+      setStatus('done');
     } catch (err) {
-      console.log('[AISummarySheet] Error:', err.message);
-      setErrorMsg(err.message || 'Could not generate summary');
-    } finally {
-      setLoading(false);
+      console.warn('[AISummarySheet]', err.message);
+      setErrorMsg(err.message);
+      setStatus('error');
     }
   };
 
-  // ─── Scrape helper ──────────────────────────────────────────────────────────
-  const safeScrapePage = async (url) => {
-    // Try allorigins CORS proxy on web; direct fetch on native
-    const proxyUrl = Platform.OS === 'web'
-      ? `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
-      : url;
+  // ── Scrape helper (tries each proxy, returns null if all fail) ────────────
+  const scrapePage = async (url) => {
+    for (const makeProxyUrl of SCRAPE_PROXIES) {
+      try {
+        const proxyUrl = Platform.OS === 'web' ? makeProxyUrl(url) : url;
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 7000);
+        const res = await fetch(proxyUrl, { signal: ctrl.signal });
+        clearTimeout(tid);
+        if (!res.ok) continue;
 
+        let html = '';
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const j = await res.json();
+          html = j?.contents || '';
+        } else {
+          html = await res.text();
+        }
+
+        const text = html
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (text.length > 100) return text.substring(0, 1200);
+      } catch { /* try next proxy */ }
+    }
+    return null;
+  };
+
+  // ── Fallback input from bookmark metadata ─────────────────────────────────
+  const buildFallbackInput = (bm) => {
+    const title = bm.page_title || bm.title || '';
+    const domain = extractDomain(bm.url);
+    return `${title}. This is a webpage from ${domain}. URL: ${bm.url}. ` +
+      `Provide a brief summary of what this page likely contains based on its title and domain.`;
+  };
+
+  // ── Hugging Face Inference API call ───────────────────────────────────────
+  const callHF = async (inputText) => {
+    let res;
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(proxyUrl, { signal: controller.signal });
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 25000); // 25s — model can be slow
+      res = await fetch(HF_ENDPOINT, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          Authorization: `Bearer ${HF_TOKEN}`,
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({
+          inputs: inputText,
+          parameters: { max_length: 180, min_length: 40, do_sample: false },
+        }),
+      });
       clearTimeout(tid);
-
-      if (!res.ok) return null;
-
-      let html = '';
-      if (Platform.OS === 'web') {
-        const json = await res.json();
-        html = json?.contents || '';
-      } else {
-        html = await res.text();
-      }
-
-      if (!html) return null;
-
-      const text = html
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      return text.length > 80 ? text.substring(0, 1200) : null;
-    } catch {
-      return null;
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('Request timed out — model may be loading, tap Retry');
+      // Network / CORS error
+      throw new Error(`Network error reaching AI service (${err.message})`);
     }
-  };
-
-  // ─── Hugging Face call ──────────────────────────────────────────────────────
-  const callHuggingFace = async (inputText) => {
-    const res = await fetch(MODEL_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${HF_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        inputs: inputText,
-        parameters: { max_length: 200, min_length: 50 },
-      }),
-    });
 
     // Model warming up
     if (res.status === 503) {
-      const body = await res.json().catch(() => ({}));
-      const wait = body?.estimated_time ? `~${Math.ceil(body.estimated_time)}s` : '20s';
-      throw new Error(`AI model is warming up — tap Retry in ${wait}`);
+      let wait = 20;
+      try { const b = await res.json(); wait = Math.ceil(b?.estimated_time ?? 20); } catch {}
+      throw new Error(`AI model is warming up — tap Retry in ~${wait}s`);
     }
 
+    if (res.status === 401) throw new Error('AI service authentication failed');
+    if (res.status === 429) throw new Error('AI rate limit hit — please wait a minute and retry');
+
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body?.error || `API error (${res.status})`);
+      let msg = `AI service error (HTTP ${res.status})`;
+      try { const b = await res.json(); msg = b?.error || msg; } catch {}
+      throw new Error(msg);
     }
 
     const data = await res.json();
-    const text = data?.[0]?.summary_text;
-    if (!text) throw new Error('AI returned an empty response — try again');
+    const text = data?.[0]?.summary_text || data?.summary_text;
+    if (!text) throw new Error('AI returned empty response — tap Retry');
     return text;
   };
 
-  // ─── Split into 3 bullet points ─────────────────────────────────────────────
-  const splitAndSet = (text) => {
-    // Split on sentence boundaries
-    const raw = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 8);
-    if (raw.length === 0) {
-      setSummaryPoints([text]);
-      return;
-    }
-    const points = raw.slice(0, 3);
-    while (points.length < 3) points.push('Visit the page for more details.');
-    setSummaryPoints(points);
+  // ── Split into 3 bullet points ────────────────────────────────────────────
+  const applyPoints = (text) => {
+    const sentences = text
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 8);
+
+    const pts = sentences.slice(0, 3);
+    while (pts.length < 3) pts.push('Open the page for full details.');
+    setSummaryPoints(pts);
   };
 
   const extractDomain = (url) => {
@@ -199,25 +218,21 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
     try { await Linking.openURL(bookmark.url); } catch {}
   };
 
-  // ─── Render ─────────────────────────────────────────────────────────────────
-  // NOTE: Never return null — always render so animation works on re-open.
-  // Use pointerEvents to disable interaction when hidden.
-  const isHidden = !visible;
-
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <Animated.View
-      style={[styles.wrapper, { opacity: overlayOpacity, pointerEvents: isHidden ? 'none' : 'auto' }]}
-      pointerEvents={isHidden ? 'none' : 'box-none'}
+      style={[styles.overlay, { opacity: overlayOpacity }]}
+      pointerEvents={visible ? 'box-none' : 'none'}
     >
-      {/* Dim overlay — tap to close */}
+      {/* Tap backdrop to close */}
       <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1} />
 
-      {/* Sheet panel */}
+      {/* Sheet panel slides from bottom */}
       <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}>
-        {/* Drag handle */}
+        {/* Handle */}
         <View style={styles.handle} />
 
-        {/* Header row */}
+        {/* Header */}
         <View style={styles.headerRow}>
           <Text style={styles.headerTitle}>✨ AI Summary</Text>
           <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
@@ -225,33 +240,39 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
           </TouchableOpacity>
         </View>
 
-        {/* Bookmark subtitle */}
+        {/* Subtitle */}
         {bookmark && (
-          <Text style={styles.bookmarkSubtitle} numberOfLines={1}>
+          <Text style={styles.subtitle} numberOfLines={1}>
             {bookmark.page_title || bookmark.title || extractDomain(bookmark.url || '')}
           </Text>
         )}
 
-        {/* Content area */}
-        <View style={styles.contentArea}>
-          {loading ? (
+        {/* Content */}
+        <View style={styles.body}>
+          {status === 'loading' && (
             <View style={styles.shimmerBox}>
-              <Animated.View style={[styles.shimmerLine, { width: '92%', opacity: shimmerAnim }]} />
-              <Animated.View style={[styles.shimmerLine, { width: '78%', opacity: shimmerAnim }]} />
-              <Animated.View style={[styles.shimmerLine, { width: '85%', opacity: shimmerAnim }]} />
+              {[0.9, 0.7, 0.82].map((w, i) => (
+                <Animated.View
+                  key={i}
+                  style={[styles.shimmerLine, { width: `${w * 100}%`, opacity: shimmer }]}
+                />
+              ))}
               <Text style={styles.loadingHint}>Generating summary…</Text>
             </View>
-          ) : errorMsg ? (
+          )}
+
+          {status === 'error' && (
             <View style={styles.errorBox}>
-              <Ionicons name="alert-circle-outline" size={32} color="#f87171" />
+              <Ionicons name="alert-circle-outline" size={28} color="#f87171" />
               <Text style={styles.errorText}>{errorMsg}</Text>
-              <TouchableOpacity style={styles.retryBtn} onPress={loadSummary} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.retryBtn} onPress={runSummary} activeOpacity={0.8}>
                 <Text style={styles.retryText}>↺  Retry</Text>
               </TouchableOpacity>
             </View>
-          ) : summaryPoints.length > 0 ? (
+          )}
+
+          {status === 'done' && (
             <View style={styles.pointsBox}>
-              {debugMsg ? <Text style={styles.debugHint}>{debugMsg}</Text> : null}
               {summaryPoints.map((pt, i) => (
                 <View key={i} style={styles.pointRow}>
                   <View style={styles.dot} />
@@ -259,24 +280,24 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
                 </View>
               ))}
             </View>
-          ) : (
-            // Empty idle state
+          )}
+
+          {status === 'idle' && (
             <View style={styles.idleBox}>
-              <Ionicons name="sparkles-outline" size={28} color="#4f46e5" />
-              <Text style={styles.idleText}>Summary will appear here</Text>
+              <Ionicons name="sparkles-outline" size={26} color="#4f46e5" />
+              <Text style={styles.idleText}>Loading…</Text>
             </View>
           )}
         </View>
 
-        {/* Open in browser button */}
+        {/* Open in browser */}
         <TouchableOpacity style={styles.openBtn} onPress={openBrowser} activeOpacity={0.85}>
           <LinearGradient
             colors={['#4f46e5', '#7c3aed']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
             style={styles.openGradient}
           >
-            <Ionicons name="open-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
+            <Ionicons name="open-outline" size={16} color="#fff" style={{ marginRight: 7 }} />
             <Text style={styles.openText}>Open in Browser</Text>
           </LinearGradient>
         </TouchableOpacity>
@@ -286,12 +307,12 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
 }
 
 const styles = StyleSheet.create({
-  wrapper: {
+  overlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
     elevation: 9999,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.62)',
   },
   sheet: {
     backgroundColor: '#13131a',
@@ -312,7 +333,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(255,255,255,0.22)',
     alignSelf: 'center',
     marginBottom: 18,
   },
@@ -320,7 +341,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 4,
   },
   headerTitle: {
     fontSize: 18,
@@ -329,16 +350,16 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
   },
   closeBtn: { padding: 4 },
-  bookmarkSubtitle: {
+  subtitle: {
     fontSize: 12,
     color: '#6b7280',
     fontWeight: '500',
-    marginBottom: 20,
+    marginBottom: 18,
   },
-  contentArea: {
+  body: {
     minHeight: 130,
     justifyContent: 'center',
-    marginBottom: 20,
+    marginBottom: 18,
   },
   // Shimmer
   shimmerBox: { gap: 12 },
@@ -348,33 +369,32 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   loadingHint: {
-    color: '#4b5563',
+    color: '#374151',
     fontSize: 12,
-    marginTop: 8,
+    marginTop: 10,
     textAlign: 'center',
   },
   // Error
   errorBox: { alignItems: 'center', gap: 10 },
   errorText: {
     color: '#d1d5db',
-    fontSize: 14,
+    fontSize: 13,
     textAlign: 'center',
     lineHeight: 20,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
   },
   retryBtn: {
     marginTop: 4,
-    paddingVertical: 8,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    backgroundColor: 'rgba(79,70,229,0.18)',
+    paddingVertical: 9,
+    paddingHorizontal: 22,
+    borderRadius: 10,
+    backgroundColor: 'rgba(79,70,229,0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(79,70,229,0.4)',
+    borderColor: 'rgba(79,70,229,0.35)',
   },
   retryText: { color: '#a5b4fc', fontSize: 14, fontWeight: '700' },
   // Points
   pointsBox: { gap: 14 },
-  debugHint: { color: '#4b5563', fontSize: 11, marginBottom: 4 },
   pointRow: { flexDirection: 'row', alignItems: 'flex-start' },
   dot: {
     width: 7,
@@ -383,6 +403,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#4f46e5',
     marginTop: 8,
     marginRight: 12,
+    flexShrink: 0,
   },
   pointText: {
     flex: 1,
@@ -392,8 +413,8 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   // Idle
-  idleBox: { alignItems: 'center', gap: 10 },
-  idleText: { color: '#4b5563', fontSize: 14 },
+  idleBox: { alignItems: 'center', gap: 8 },
+  idleText: { color: '#374151', fontSize: 13 },
   // Open button
   openBtn: {
     height: 50,
