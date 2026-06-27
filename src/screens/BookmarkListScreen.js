@@ -399,28 +399,24 @@ export default function BookmarkListScreen({ navigation }) {
         }
       />
 
-      {/* Delete Confirmation – always rendered, hidden via pointerEvents + opacity */}
+      {/* Delete Confirmation – always rendered, hidden via opacity + pointerEvents */}
       <Animated.View
-        style={[
-          styles.deleteSheetWrapper,
-          { opacity: deleteOverlayOpacity },
-        ]}
+        style={[styles.deleteSheetWrapper, { opacity: deleteOverlayOpacity }]}
         pointerEvents={showBottomSheet ? 'box-none' : 'none'}
       >
-        {/* Tap dim area to dismiss */}
+        {/* Dark backdrop — sits behind the panel */}
         <TouchableOpacity
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, { zIndex: 0 }]}
           onPress={dismissBottomSheet}
           activeOpacity={1}
         />
 
-        {/* Sheet slides up from bottom */}
+        {/* Sheet panel — zIndex above backdrop so buttons are tappable */}
         <Animated.View
           style={[
             styles.deleteSheetPanel,
-            { transform: [{ translateY: bottomSheetY }] },
+            { transform: [{ translateY: bottomSheetY }], zIndex: 1 },
           ]}
-          pointerEvents="box-none"
         >
           <View style={styles.bottomSheetHandle} />
           <Text style={styles.bottomSheetTitle}>Delete this bookmark?</Text>
