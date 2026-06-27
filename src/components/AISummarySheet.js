@@ -8,6 +8,7 @@ import {
   Dimensions,
   Platform,
   Linking,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -293,8 +294,14 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
           </Text>
         )}
 
-        {/* Content */}
-        <View style={styles.body}>
+        {/* Content — scrollable so long summaries don't get clipped */}
+        <ScrollView
+          style={styles.body}
+          contentContainerStyle={styles.bodyContent}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+          keyboardShouldPersistTaps="handled"
+        >
           {status === 'loading' && (
             <View style={styles.shimmerBox}>
               {[0.9, 0.7, 0.82].map((w, i) => (
@@ -334,7 +341,7 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
               <Text style={styles.idleText}>Preparing…</Text>
             </View>
           )}
-        </View>
+        </ScrollView>
 
         {/* Open in browser */}
         <TouchableOpacity style={styles.openBtn} onPress={openBrowser} activeOpacity={0.85}>
@@ -364,6 +371,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#13131a',
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
+    maxHeight: SCREEN_H * 0.72,
     paddingTop: 10,
     paddingHorizontal: 22,
     paddingBottom: Platform.OS === 'ios' ? 44 : 26,
@@ -412,7 +420,8 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: 18,
   },
-  body: { minHeight: 130, justifyContent: 'center', marginBottom: 18 },
+  body: { maxHeight: SCREEN_H * 0.38, marginBottom: 18 },
+  bodyContent: { flexGrow: 1, justifyContent: 'center', paddingBottom: 4 },
   shimmerBox: { gap: 12 },
   shimmerLine: {
     height: 13,
