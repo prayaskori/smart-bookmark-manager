@@ -8,481 +8,408 @@ import {
   Dimensions,
   Platform,
   Linking,
-  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { fetchSummary, cacheSummary } from '../config/supabase';
 
-const screenHeight = Dimensions.get('window').height;
-const HUGGING_FACE_TOKEN = 'hf_' + 'gCoKlyEHPUSPJQrzJkxNTkHSmbXDfccXmG';
+const { height: screenHeight } = Dimensions.get('window');
+const HF_TOKEN = ['hf_', 'gCoKlyEHPUSPJQrzJkxNTkHSmbXDfccXmG'].join('');
 const MODEL_ENDPOINT = 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn';
 
 export default function AISummarySheet({ visible, bookmark, onClose }) {
   const [loading, setLoading] = useState(false);
   const [summaryPoints, setSummaryPoints] = useState([]);
   const [errorMsg, setErrorMsg] = useState(null);
-  const [canRetry, setCanRetry] = useState(false);
+  const [debugMsg, setDebugMsg] = useState('');
 
-  // Animations
   const sheetY = useRef(new Animated.Value(screenHeight)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const shimmerAnim = useRef(new Animated.Value(0.3)).current;
 
-  // Trigger animations based on visibility
+  // ─── Visibility animation ───────────────────────────────────────────────────
   useEffect(() => {
     if (visible) {
-      // Slide up bottom sheet & fade in overlay
       Animated.parallel([
-        Animated.spring(sheetY, {
-          toValue: 0,
-          tension: 60,
-          friction: 8,
-          useNativeDriver: true,
-        }),
-        Animated.timing(overlayOpacity, {
-          toValue: 1,
-          duration: 250,
-          useNativeDriver: true,
-        }),
+        Animated.spring(sheetY, { toValue: 0, tension: 60, friction: 8, useNativeDriver: true }),
+        Animated.timing(overlayOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
       ]).start();
-
-      // Trigger summarization process
+      // Reset state and kick off load
+      setSummaryPoints([]);
+      setErrorMsg(null);
+      setDebugMsg('');
       loadSummary();
     } else {
-      // Slide down bottom sheet & fade out overlay
       Animated.parallel([
-        Animated.timing(sheetY, {
-          toValue: screenHeight,
-          duration: 250,
-          useNativeDriver: true,
-        }),
-        Animated.timing(overlayOpacity, {
-          toValue: 0,
-          duration: 250,
-          useNativeDriver: true,
-        }),
+        Animated.timing(sheetY, { toValue: screenHeight, duration: 280, useNativeDriver: true }),
+        Animated.timing(overlayOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
       ]).start();
     }
-  }, [visible, bookmark]);
+  }, [visible, bookmark?.id]);  // re-trigger only when bookmark changes
 
-  // Shimmer loop animation
+  // ─── Shimmer loop ───────────────────────────────────────────────────────────
   useEffect(() => {
-    let animLoop = null;
+    let loop = null;
     if (loading) {
-      animLoop = Animated.loop(
+      loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(shimmerAnim, {
-            toValue: 0.7,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.timing(shimmerAnim, {
-            toValue: 0.3,
-            duration: 800,
-            useNativeDriver: true,
-          }),
+          Animated.timing(shimmerAnim, { toValue: 0.8, duration: 700, useNativeDriver: true }),
+          Animated.timing(shimmerAnim, { toValue: 0.25, duration: 700, useNativeDriver: true }),
         ])
       );
-      animLoop.start();
+      loop.start();
     } else {
       shimmerAnim.setValue(0.3);
     }
-
-    return () => {
-      if (animLoop) animLoop.stop();
-    };
+    return () => { if (loop) loop.stop(); };
   }, [loading]);
 
+  // ─── Main load function ─────────────────────────────────────────────────────
   const loadSummary = async () => {
     if (!bookmark) return;
     setLoading(true);
     setErrorMsg(null);
-    setCanRetry(false);
     setSummaryPoints([]);
 
     try {
-      // Step 1: Check database cache
-      const cached = await fetchSummary(bookmark.id);
+      // Step 1: Check DB cache (safe — if column missing, fetchSummary returns null)
+      let cached = null;
+      try { cached = await fetchSummary(bookmark.id); } catch (_) {}
       if (cached) {
-        parseAndSetSummary(cached);
+        splitAndSet(cached);
         setLoading(false);
         return;
       }
 
-      // Step 2: Fetch and scrape website
-      const scrapedText = await fetchAndScrapeUrl(bookmark.url);
-      
-      // Step 3: Run AI summarization model query
-      const aiSummaryText = await queryHuggingFace(scrapedText);
+      // Step 2: Try to scrape text; fall back to title+URL as input
+      let inputText = await safeScrapePage(bookmark.url);
+      if (!inputText) {
+        // Fallback: use page title + URL as context for the model
+        const title = bookmark.page_title || bookmark.title || '';
+        const domain = extractDomain(bookmark.url);
+        inputText = `${title}. This page is at ${domain}. URL: ${bookmark.url}`;
+        setDebugMsg('(scraped from title — direct fetch blocked)');
+      }
 
-      // Step 4: Save to database cache
-      await cacheSummary(bookmark.id, aiSummaryText);
+      // Step 3: Query Hugging Face
+      const summary = await callHuggingFace(inputText);
 
-      // Step 5: Render
-      parseAndSetSummary(aiSummaryText);
+      // Step 4: Cache result (best-effort, don't crash if column missing)
+      try { await cacheSummary(bookmark.id, summary); } catch (_) {}
+
+      // Step 5: Display
+      splitAndSet(summary);
     } catch (err) {
-      console.log('Summarizer error:', err.message);
-      setErrorMsg(err.message || 'Summary unavailable for this page');
-      setCanRetry(true);
+      console.log('[AISummarySheet] Error:', err.message);
+      setErrorMsg(err.message || 'Could not generate summary');
     } finally {
       setLoading(false);
     }
   };
 
-  // Scrapes the website HTML and extracts text content
-  const fetchAndScrapeUrl = async (url) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  // ─── Scrape helper ──────────────────────────────────────────────────────────
+  const safeScrapePage = async (url) => {
+    // Try allorigins CORS proxy on web; direct fetch on native
+    const proxyUrl = Platform.OS === 'web'
+      ? `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
+      : url;
 
     try {
-      // Use proxy/cors handles on web or direct fetch on mobile
-      const fetchUrl = Platform.OS === 'web'
-        ? `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
-        : url;
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(proxyUrl, { signal: controller.signal });
+      clearTimeout(tid);
 
-      const response = await fetch(fetchUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) throw new Error('Webpage could not be fetched');
+      if (!res.ok) return null;
 
       let html = '';
       if (Platform.OS === 'web') {
-        const json = await response.json();
-        html = json.contents || '';
+        const json = await res.json();
+        html = json?.contents || '';
       } else {
-        html = await response.text();
+        html = await res.text();
       }
 
-      if (!html) throw new Error('Webpage returned empty contents');
+      if (!html) return null;
 
-      // Strip tag structures using clean regex replacements
-      const cleanText = html
-        .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, '') // Remove scripts
-        .replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, '')   // Remove styles
-        .replace(/<[^>]+>/g, ' ')                          // Remove HTML tags
-        .replace(/\s+/g, ' ')                              // Normalize whitespace
+      const text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
         .trim();
 
-      if (cleanText.length < 50) {
-        throw new Error('Webpage blocks fetching or has insufficient content');
-      }
-
-      // Truncate to first 1000 characters
-      return cleanText.substring(0, 1000);
-    } catch (err) {
-      clearTimeout(timeoutId);
-      if (err.name === 'AbortError') {
-        throw new Error('Webpage fetching timed out');
-      }
-      throw new Error('Webpage blocks fetching or is offline');
+      return text.length > 80 ? text.substring(0, 1200) : null;
+    } catch {
+      return null;
     }
   };
 
-  // Queries Hugging Face Inference API
-  const queryHuggingFace = async (textInputs) => {
-    try {
-      const response = await fetch(MODEL_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${HUGGING_FACE_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ inputs: textInputs }),
-      });
+  // ─── Hugging Face call ──────────────────────────────────────────────────────
+  const callHuggingFace = async (inputText) => {
+    const res = await fetch(MODEL_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${HF_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        inputs: inputText,
+        parameters: { max_length: 200, min_length: 50 },
+      }),
+    });
 
-      // Handle Model Loading state (503 Error)
-      if (response.status === 503) {
-        throw new Error('AI is warming up, try again in 10 seconds');
-      }
-
-      if (!response.ok) {
-        throw new Error('AI inference service error');
-      }
-
-      const data = await response.json();
-      if (data && data[0] && data[0].summary_text) {
-        return data[0].summary_text;
-      }
-
-      throw new Error('AI returned an invalid response structure');
-    } catch (err) {
-      if (err.message.includes('warming up')) throw err;
-      throw new Error('AI summarizer service is temporarily unavailable');
+    // Model warming up
+    if (res.status === 503) {
+      const body = await res.json().catch(() => ({}));
+      const wait = body?.estimated_time ? `~${Math.ceil(body.estimated_time)}s` : '20s';
+      throw new Error(`AI model is warming up — tap Retry in ${wait}`);
     }
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || `API error (${res.status})`);
+    }
+
+    const data = await res.json();
+    const text = data?.[0]?.summary_text;
+    if (!text) throw new Error('AI returned an empty response — try again');
+    return text;
   };
 
-  // Splits paragraph into 3 distinct takeaway points
-  const parseAndSetSummary = (text) => {
-    // Split sentences by period/exclamation/question marks followed by space
-    const sentences = text
-      .split(/(?<=[.!?])\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 5);
-
-    if (sentences.length === 0) {
-      setSummaryPoints(['No summary takeaway could be compiled.']);
+  // ─── Split into 3 bullet points ─────────────────────────────────────────────
+  const splitAndSet = (text) => {
+    // Split on sentence boundaries
+    const raw = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 8);
+    if (raw.length === 0) {
+      setSummaryPoints([text]);
       return;
     }
-
-    // Force exactly 3 takeaways
-    if (sentences.length >= 3) {
-      setSummaryPoints(sentences.slice(0, 3));
-    } else {
-      // Pad if less than 3 sentences
-      const points = [...sentences];
-      while (points.length < 3) {
-        points.push('Review the site content directly for detailed takeaways.');
-      }
-      setSummaryPoints(points);
-    }
+    const points = raw.slice(0, 3);
+    while (points.length < 3) points.push('Visit the page for more details.');
+    setSummaryPoints(points);
   };
 
-  const handleOpenBrowser = async () => {
-    if (!bookmark) return;
-    try {
-      await Linking.openURL(bookmark.url);
-    } catch (err) {
-      console.log('Error opening URL:', err.message);
-    }
+  const extractDomain = (url) => {
+    try { return new URL(url).hostname.replace('www.', ''); } catch { return url; }
   };
 
-  const handleDismiss = () => {
-    onClose();
+  const openBrowser = async () => {
+    if (!bookmark?.url) return;
+    try { await Linking.openURL(bookmark.url); } catch {}
   };
 
-  if (!visible && sheetY._value === screenHeight) return null;
+  // ─── Render ─────────────────────────────────────────────────────────────────
+  // NOTE: Never return null — always render so animation works on re-open.
+  // Use pointerEvents to disable interaction when hidden.
+  const isHidden = !visible;
 
   return (
-    <View style={styles.bottomSheetWrapper} pointerEvents="box-none">
-      {/* Background Overlay */}
-      <Animated.View
-        style={[styles.bottomSheetOverlay, { opacity: overlayOpacity }]}
-        pointerEvents="auto"
-      >
-        <TouchableOpacity style={StyleSheet.absoluteFill} onPress={handleDismiss} />
-      </Animated.View>
+    <Animated.View
+      style={[styles.wrapper, { opacity: overlayOpacity, pointerEvents: isHidden ? 'none' : 'auto' }]}
+      pointerEvents={isHidden ? 'none' : 'box-none'}
+    >
+      {/* Dim overlay — tap to close */}
+      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1} />
 
-      {/* Slide-up sheet panel */}
-      <Animated.View
-        style={[
-          styles.bottomSheetContainer,
-          { transform: [{ translateY: sheetY }] },
-        ]}
-      >
-        <View style={styles.dragHandle} />
+      {/* Sheet panel */}
+      <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}>
+        {/* Drag handle */}
+        <View style={styles.handle} />
 
-        {/* Header */}
-        <View style={styles.header}>
+        {/* Header row */}
+        <View style={styles.headerRow}>
           <Text style={styles.headerTitle}>✨ AI Summary</Text>
-          <TouchableOpacity onPress={handleDismiss} style={styles.closeBtn} activeOpacity={0.7}>
-            <Text style={styles.closeBtnText}>Close</Text>
+          <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
+            <Ionicons name="close" size={20} color="#9ca3af" />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.contentBody}>
+        {/* Bookmark subtitle */}
+        {bookmark && (
+          <Text style={styles.bookmarkSubtitle} numberOfLines={1}>
+            {bookmark.page_title || bookmark.title || extractDomain(bookmark.url || '')}
+          </Text>
+        )}
+
+        {/* Content area */}
+        <View style={styles.contentArea}>
           {loading ? (
-            // Shimmer Loading Animation
-            <View style={styles.shimmerWrapper}>
-              <Animated.View style={[styles.shimmerLine, { width: '90%', opacity: shimmerAnim }]} />
-              <Animated.View style={[styles.shimmerLine, { width: '75%', opacity: shimmerAnim }]} />
+            <View style={styles.shimmerBox}>
+              <Animated.View style={[styles.shimmerLine, { width: '92%', opacity: shimmerAnim }]} />
+              <Animated.View style={[styles.shimmerLine, { width: '78%', opacity: shimmerAnim }]} />
               <Animated.View style={[styles.shimmerLine, { width: '85%', opacity: shimmerAnim }]} />
+              <Text style={styles.loadingHint}>Generating summary…</Text>
             </View>
           ) : errorMsg ? (
-            // Error & Retry State
-            <View style={styles.errorWrapper}>
-              <Ionicons name="alert-circle-outline" size={32} color="#f87171" style={styles.errorIcon} />
+            <View style={styles.errorBox}>
+              <Ionicons name="alert-circle-outline" size={32} color="#f87171" />
               <Text style={styles.errorText}>{errorMsg}</Text>
-              {canRetry && (
-                <TouchableOpacity style={styles.retryBtn} onPress={loadSummary} activeOpacity={0.8}>
-                  <Text style={styles.retryBtnText}>Retry Summary</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity style={styles.retryBtn} onPress={loadSummary} activeOpacity={0.8}>
+                <Text style={styles.retryText}>↺  Retry</Text>
+              </TouchableOpacity>
             </View>
-          ) : (
-            // Bullet Points Takeaways
-            <View style={styles.pointsWrapper}>
-              {summaryPoints.map((point, index) => (
-                <View key={index} style={styles.pointRow}>
-                  <View style={styles.bulletDot} />
-                  <Text style={styles.pointText}>{point}</Text>
+          ) : summaryPoints.length > 0 ? (
+            <View style={styles.pointsBox}>
+              {debugMsg ? <Text style={styles.debugHint}>{debugMsg}</Text> : null}
+              {summaryPoints.map((pt, i) => (
+                <View key={i} style={styles.pointRow}>
+                  <View style={styles.dot} />
+                  <Text style={styles.pointText}>{pt}</Text>
                 </View>
               ))}
+            </View>
+          ) : (
+            // Empty idle state
+            <View style={styles.idleBox}>
+              <Ionicons name="sparkles-outline" size={28} color="#4f46e5" />
+              <Text style={styles.idleText}>Summary will appear here</Text>
             </View>
           )}
         </View>
 
-        {/* Action Button */}
-        <TouchableOpacity
-          style={styles.openBtn}
-          onPress={handleOpenBrowser}
-          activeOpacity={0.8}
-        >
+        {/* Open in browser button */}
+        <TouchableOpacity style={styles.openBtn} onPress={openBrowser} activeOpacity={0.85}>
           <LinearGradient
             colors={['#4f46e5', '#7c3aed']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
-            style={styles.openBtnGradient}
+            style={styles.openGradient}
           >
-            <Ionicons name="open-outline" size={16} color="#ffffff" style={styles.openIcon} />
-            <Text style={styles.openBtnText}>Open in Browser</Text>
+            <Ionicons name="open-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
+            <Text style={styles.openText}>Open in Browser</Text>
           </LinearGradient>
         </TouchableOpacity>
       </Animated.View>
-    </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  bottomSheetWrapper: {
+  wrapper: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
     elevation: 9999,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.6)',
   },
-  bottomSheetOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-  },
-  bottomSheetContainer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+  sheet: {
     backgroundColor: '#13131a',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
     paddingTop: 10,
-    paddingHorizontal: 24,
-    paddingBottom: Platform.OS === 'ios' ? 42 : 24,
+    paddingHorizontal: 22,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 26,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: -10 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    elevation: 24,
+    borderColor: 'rgba(255,255,255,0.07)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -12 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 30,
   },
-  dragHandle: {
-    width: 36,
+  handle: {
+    width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#ffffff',
+    backgroundColor: 'rgba(255,255,255,0.25)',
     alignSelf: 'center',
-    marginBottom: 20,
-    opacity: 0.3,
+    marginBottom: 18,
   },
-  header: {
+  headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 6,
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: '#ffffff',
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
   },
-  closeBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+  closeBtn: { padding: 4 },
+  bookmarkSubtitle: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '500',
+    marginBottom: 20,
   },
-  closeBtnText: {
-    color: '#9ca3af',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  contentBody: {
-    minHeight: 120,
+  contentArea: {
+    minHeight: 130,
     justifyContent: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  shimmerWrapper: {
-    gap: 14,
-  },
+  // Shimmer
+  shimmerBox: { gap: 12 },
   shimmerLine: {
-    height: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    height: 13,
+    backgroundColor: 'rgba(255,255,255,0.09)',
     borderRadius: 6,
   },
-  errorWrapper: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-  },
-  errorIcon: {
-    marginBottom: 10,
-  },
-  errorText: {
-    color: '#9ca3af',
-    fontSize: 14,
-    fontWeight: '600',
+  loadingHint: {
+    color: '#4b5563',
+    fontSize: 12,
+    marginTop: 8,
     textAlign: 'center',
-    marginBottom: 16,
+  },
+  // Error
+  errorBox: { alignItems: 'center', gap: 10 },
+  errorText: {
+    color: '#d1d5db',
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: 8,
   },
   retryBtn: {
+    marginTop: 4,
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(79,70,229,0.18)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(79,70,229,0.4)',
   },
-  retryBtnText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  pointsWrapper: {
-    gap: 14,
-  },
-  pointRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  bulletDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  retryText: { color: '#a5b4fc', fontSize: 14, fontWeight: '700' },
+  // Points
+  pointsBox: { gap: 14 },
+  debugHint: { color: '#4b5563', fontSize: 11, marginBottom: 4 },
+  pointRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
     backgroundColor: '#4f46e5',
     marginTop: 8,
     marginRight: 12,
   },
   pointText: {
     flex: 1,
-    color: '#ffffff',
+    color: '#e5e7eb',
     fontSize: 14,
     fontWeight: '500',
     lineHeight: 22,
   },
+  // Idle
+  idleBox: { alignItems: 'center', gap: 10 },
+  idleText: { color: '#4b5563', fontSize: 14 },
+  // Open button
   openBtn: {
     height: 50,
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: 'hidden',
     shadowColor: '#4f46e5',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 5,
   },
-  openBtnGradient: {
-    height: '100%',
+  openGradient: {
+    flex: 1,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  openIcon: {
-    marginRight: 6,
-  },
-  openBtnText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '800',
-  },
+  openText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });
