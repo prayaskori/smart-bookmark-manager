@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking, Alert, Image, Animated } from 'react-native';
-import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { Ionicons } from '@expo/vector-icons';
 
 const TAG_COLORS = {
@@ -87,73 +86,83 @@ export default function BookmarkItem({ item, onDelete, onLongPress }) {
   const tagColor = TAG_COLORS[item.tag] || TAG_COLORS.Other;
 
   return (
-    <Swipeable renderRightActions={renderRightActions} friction={1.5} rightThreshold={40}>
-      <Animated.View
-        style={[
-          styles.cardContainer,
-          { opacity: fadeAnim, transform: [{ translateY: slideY }] },
-        ]}
-      >
-        <View style={styles.card}>
-          {/* Left Side Accent Tag Bar */}
-          <View style={[styles.accentBar, { backgroundColor: tagColor }]} />
+    <Animated.View
+      style={[
+        styles.cardContainer,
+        { opacity: fadeAnim, transform: [{ translateY: slideY }] },
+      ]}
+    >
+      <View style={styles.card}>
+        {/* Left Side Accent Tag Bar */}
+        <View style={[styles.accentBar, { backgroundColor: tagColor }]} />
 
-          <TouchableOpacity
-            style={styles.content}
-            onPress={handleOpenLink}
-            onLongPress={() => onLongPress && onLongPress(item)}
-            delayLongPress={500}
-            activeOpacity={0.7}
-          >
-            <View style={styles.row}>
-              {/* Site Favicon Icon / Image */}
-              {!imgErr && item.favicon_url ? (
-                <Image
-                  source={{ uri: item.favicon_url }}
-                  style={styles.favicon}
-                  onError={() => setImgErr(true)}
-                />
-              ) : (
-                <View style={[styles.iconCircle, { borderColor: tagColor + '30', backgroundColor: tagColor + '10' }]}>
-                  <Ionicons name="link-outline" size={16} color={tagColor} />
-                </View>
-              )}
+        <TouchableOpacity
+          style={styles.content}
+          onPress={handleOpenLink}
+          onLongPress={() => onLongPress && onLongPress(item)}
+          delayLongPress={500}
+          activeOpacity={0.7}
+        >
+          <View style={styles.row}>
+            {/* Site Favicon Icon / Image */}
+            {!imgErr && item.favicon_url ? (
+              <Image
+                source={{ uri: item.favicon_url }}
+                style={styles.favicon}
+                onError={() => setImgErr(true)}
+              />
+            ) : (
+              <View style={[styles.iconCircle, { borderColor: tagColor + '30', backgroundColor: tagColor + '10' }]}>
+                <Ionicons name="link-outline" size={16} color={tagColor} />
+              </View>
+            )}
 
-              {/* Text info layout */}
-              <View style={styles.textContainer}>
-                <View style={styles.titleRow}>
-                  <Text style={styles.title} numberOfLines={1}>
-                    {item.page_title || item.title || 'Untitled Bookmark'}
-                  </Text>
-                </View>
-                
-                <View style={styles.metaRow}>
-                  <Text style={styles.domain} numberOfLines={1}>
-                    {getDomain(item.url)}
-                  </Text>
-                  <Text style={styles.dotSeparator}>•</Text>
-                  <Text style={styles.date}>{formatDate(item.created_at)}</Text>
-                </View>
+            {/* Text info layout */}
+            <View style={styles.textContainer}>
+              <View style={styles.titleRow}>
+                <Text style={styles.title} numberOfLines={1}>
+                  {item.page_title || item.title || 'Untitled Bookmark'}
+                </Text>
+              </View>
+              
+              <View style={styles.metaRow}>
+                <Text style={styles.domain} numberOfLines={1}>
+                  {getDomain(item.url)}
+                </Text>
+                <Text style={styles.dotSeparator}>•</Text>
+                <Text style={styles.date}>{formatDate(item.created_at)}</Text>
               </View>
             </View>
+          </View>
+        </TouchableOpacity>
+
+        {/* Right side: AI summary + Delete */}
+        <View style={styles.rightActionsWrapper}>
+          {/* Tag badge */}
+          <View style={[styles.tagBadge, { backgroundColor: tagColor + '20', borderColor: tagColor + '40' }]}>
+            <Text style={[styles.tagBadgeText, { color: tagColor }]}>{item.tag || 'Other'}</Text>
+          </View>
+
+          {/* AI Summary trigger */}
+          <TouchableOpacity
+            style={styles.chevronWrapper}
+            onPress={() => onLongPress && onLongPress(item)}
+            activeOpacity={0.6}
+          >
+            <Ionicons name="sparkles-outline" size={15} color="#4f46e5" />
           </TouchableOpacity>
 
-          {/* Tag Pill Badge + Chevron */}
-          <View style={styles.rightActionsWrapper}>
-            <View style={[styles.tagBadge, { backgroundColor: tagColor + '20', borderColor: tagColor + '40' }]}>
-              <Text style={[styles.tagBadgeText, { color: tagColor }]}>{item.tag || 'Other'}</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.chevronWrapper}
-              onPress={() => onLongPress && onLongPress(item)}
-              activeOpacity={0.6}
-            >
-              <Ionicons name="chevron-forward" size={16} color="#4b5563" />
-            </TouchableOpacity>
-          </View>
+          {/* Delete button — always visible, works on web + mobile */}
+          <TouchableOpacity
+            style={styles.trashBtn}
+            onPress={() => onDelete(item.id)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="trash-outline" size={15} color="#ef4444" />
+          </TouchableOpacity>
         </View>
-      </Animated.View>
-    </Swipeable>
+      </View>
+    </Animated.View>
   );
 }
 
@@ -266,6 +275,15 @@ const styles = StyleSheet.create({
   chevronWrapper: {
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 6,
+    marginRight: 2,
+  },
+  trashBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(239,68,68,0.1)',
   },
   deleteButton: {
     backgroundColor: '#b91c1c',
