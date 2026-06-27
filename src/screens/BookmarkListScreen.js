@@ -357,7 +357,7 @@ export default function BookmarkListScreen({ navigation }) {
 
       {/* Delete Confirmation Custom Animated Bottom Sheet Overlay */}
       {showBottomSheet && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        <View style={styles.bottomSheetWrapper} pointerEvents="box-none">
           {/* Fading black background overlay */}
           <Animated.View
             style={[styles.bottomSheetOverlay, { opacity: overlayOpacity }]}
@@ -553,6 +553,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   // Custom Animated Bottom Sheet Overlay
+  bottomSheetWrapper: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+  },
   bottomSheetOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
