@@ -11,7 +11,7 @@ const TAG_COLORS = {
   Other: '#6b7280',    // Grey
 };
 
-export default function BookmarkItem({ item, onDelete }) {
+export default function BookmarkItem({ item, onDelete, onLongPress }) {
   const [imgErr, setImgErr] = useState(false);
 
   // Mount animations: Slide up and fade in
@@ -98,7 +98,13 @@ export default function BookmarkItem({ item, onDelete }) {
           {/* Left Side Accent Tag Bar */}
           <View style={[styles.accentBar, { backgroundColor: tagColor }]} />
 
-          <TouchableOpacity style={styles.content} onPress={handleOpenLink} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.content}
+            onPress={handleOpenLink}
+            onLongPress={() => onLongPress && onLongPress(item)}
+            delayLongPress={500}
+            activeOpacity={0.7}
+          >
             <View style={styles.row}>
               {/* Site Favicon Icon / Image */}
               {!imgErr && item.favicon_url ? (

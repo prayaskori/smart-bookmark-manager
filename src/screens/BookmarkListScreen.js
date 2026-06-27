@@ -18,6 +18,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../config/supabase';
 import BookmarkItem from '../components/BookmarkItem';
+import AISummarySheet from '../components/AISummarySheet';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -46,6 +47,10 @@ export default function BookmarkListScreen({ navigation }) {
   // Delete Confirmation Bottom Sheet States
   const [deleteTargetId, setDeleteTargetId] = useState(null);
   const [showBottomSheet, setShowBottomSheet] = useState(false);
+
+  // AI Summary Bottom Sheet States
+  const [summaryVisible, setSummaryVisible] = useState(false);
+  const [summaryBookmark, setSummaryBookmark] = useState(null);
 
   // Bottom Sheet Slide & Opacity animations
   const bottomSheetY = useRef(new Animated.Value(screenHeight)).current;
@@ -183,6 +188,11 @@ export default function BookmarkListScreen({ navigation }) {
   const handleRefresh = () => {
     setRefreshing(true);
     fetchBookmarks(true);
+  };
+
+  const handleLongPressItem = (item) => {
+    setSummaryBookmark(item);
+    setSummaryVisible(true);
   };
 
   // Open the custom Bottom Sheet dialog
@@ -338,7 +348,7 @@ export default function BookmarkListScreen({ navigation }) {
         data={filteredBookmarks}
         keyExtractor={(item) => item.id.toString()}
         renderItem={({ item }) => (
-          <BookmarkItem item={item} onDelete={triggerDeleteConfirm} />
+          <BookmarkItem item={item} onDelete={triggerDeleteConfirm} onLongPress={handleLongPressItem} />
         )}
         contentContainerStyle={filteredBookmarks.length === 0 ? styles.emptyScrollContainer : styles.listContainer}
         refreshControl={
@@ -425,6 +435,16 @@ export default function BookmarkListScreen({ navigation }) {
           </Animated.View>
         </View>
       )}
+
+      {/* AI Summary Bottom Sheet */}
+      <AISummarySheet
+        visible={summaryVisible}
+        bookmark={summaryBookmark}
+        onClose={() => {
+          setSummaryVisible(false);
+          setSummaryBookmark(null);
+        }}
+      />
     </SafeAreaView>
   );
 }

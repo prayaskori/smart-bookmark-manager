@@ -25,3 +25,36 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false, // Prevents redirection issues on React Native
   },
 });
+
+// Fetch cached summary from Supabase
+export const fetchSummary = async (bookmarkId) => {
+  try {
+    const { data, error } = await supabase
+      .from('bookmarks')
+      .select('ai_summary')
+      .eq('id', bookmarkId)
+      .single();
+
+    if (error) throw error;
+    return data?.ai_summary || null;
+  } catch (error) {
+    console.log('Error fetching cached AI summary:', error.message);
+    return null;
+  }
+};
+
+// Cache generated summary into Supabase
+export const cacheSummary = async (bookmarkId, summaryText) => {
+  try {
+    const { error } = await supabase
+      .from('bookmarks')
+      .update({ ai_summary: summaryText })
+      .eq('id', bookmarkId);
+
+    if (error) throw error;
+    return true;
+  } catch (error) {
+    console.log('Error caching AI summary:', error.message);
+    return false;
+  }
+};
