@@ -8,6 +8,7 @@ import {
   Alert,
   SafeAreaView,
   ScrollView,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../config/supabase';
@@ -88,25 +89,38 @@ export default function ProfileScreen() {
   );
 
   const handleLogout = async () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { error } = await supabase.auth.signOut();
-              if (error) throw error;
-            } catch (error) {
-              Alert.alert('Sign Out Error', error.message || 'Could not sign out.');
-            }
+    const performSignOut = async () => {
+      try {
+        const { error } = await supabase.auth.signOut();
+        if (error) throw error;
+      } catch (error) {
+        if (Platform.OS === 'web') {
+          alert('Sign Out Error: ' + error.message);
+        } else {
+          Alert.alert('Sign Out Error', error.message || 'Could not sign out.');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      const confirm = window.confirm('Are you sure you want to sign out?');
+      if (confirm) {
+        await performSignOut();
+      }
+    } else {
+      Alert.alert(
+        'Sign Out',
+        'Are you sure you want to sign out?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Sign Out',
+            style: 'destructive',
+            onPress: performSignOut,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
   };
 
   if (loading) {

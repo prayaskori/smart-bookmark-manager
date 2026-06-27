@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, ActivityIndicator, View, Text, TouchableOpacity, Alert } from 'react-native';
+import { StyleSheet, ActivityIndicator, View, Text, TouchableOpacity, Alert, Platform } from 'react-native';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -49,25 +49,38 @@ export default function App() {
   }, []);
 
   const handleLogout = async () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { error } = await supabase.auth.signOut();
-              if (error) throw error;
-            } catch (error) {
-              Alert.alert('Sign Out Error', error.message || 'Could not sign out.');
-            }
+    const performSignOut = async () => {
+      try {
+        const { error } = await supabase.auth.signOut();
+        if (error) throw error;
+      } catch (error) {
+        if (Platform.OS === 'web') {
+          alert('Sign Out Error: ' + error.message);
+        } else {
+          Alert.alert('Sign Out Error', error.message || 'Could not sign out.');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      const confirm = window.confirm('Are you sure you want to sign out?');
+      if (confirm) {
+        await performSignOut();
+      }
+    } else {
+      Alert.alert(
+        'Sign Out',
+        'Are you sure you want to sign out?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Sign Out',
+            style: 'destructive',
+            onPress: performSignOut,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
   };
 
   if (loading) {
