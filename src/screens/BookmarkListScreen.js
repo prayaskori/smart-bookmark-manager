@@ -54,7 +54,11 @@ export default function BookmarkListScreen({ navigation }) {
   // Offline cache loader
   const loadCache = async () => {
     try {
-      const cached = await AsyncStorage.getItem(CACHE_KEY);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const userCacheKey = `${CACHE_KEY}_${user.id}`;
+      const cached = await AsyncStorage.getItem(userCacheKey);
       if (cached) {
         setBookmarks(JSON.parse(cached));
         setLoading(false); // Cache found, show bookmarks immediately!
@@ -67,7 +71,11 @@ export default function BookmarkListScreen({ navigation }) {
   // Cache saver
   const saveCache = async (data) => {
     try {
-      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(data));
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const userCacheKey = `${CACHE_KEY}_${user.id}`;
+      await AsyncStorage.setItem(userCacheKey, JSON.stringify(data));
     } catch (e) {
       console.log('AsyncStorage write error:', e);
     }
@@ -100,47 +108,75 @@ export default function BookmarkListScreen({ navigation }) {
   };
 
   useEffect(() => {
-    loadCache().then(() => {
-      fetchBookmarks();
-    });
+    let activeChannel = null;
+    let isSubscribed = true;
 
-    // Real-time synchronization subscription
-    const subscription = supabase
-      .channel('public:bookmarks')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'bookmarks',
-        },
-        (payload) => {
-          if (payload.eventType === 'INSERT') {
-            setBookmarks((prev) => {
-              if (prev.some((item) => item.id === payload.new.id)) return prev;
-              const updated = [payload.new, ...prev];
-              saveCache(updated);
-              return updated;
-            });
-          } else if (payload.eventType === 'DELETE') {
-            setBookmarks((prev) => {
-              const updated = prev.filter((item) => item.id !== payload.old.id);
-              saveCache(updated);
-              return updated;
-            });
-          } else if (payload.eventType === 'UPDATE') {
-            setBookmarks((prev) => {
-              const updated = prev.map((item) => (item.id === payload.new.id ? payload.new : item));
-              saveCache(updated);
-              return updated;
-            });
-          }
+    const setupSubscription = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user || !isSubscribed) return;
+
+        // Load the specific cache for this user, then sync fresh
+        const userCacheKey = `${CACHE_KEY}_${user.id}`;
+        const cached = await AsyncStorage.getItem(userCacheKey);
+        if (cached && isSubscribed) {
+          setBookmarks(JSON.parse(cached));
+          setLoading(false);
         }
-      )
-      .subscribe();
+        
+        fetchBookmarks();
+
+        // Subscribe to public database alterations, filtering events by current user_id
+        activeChannel = supabase
+          .channel(`user-bookmarks-${user.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'bookmarks',
+            },
+            (payload) => {
+              if (!isSubscribed) return;
+
+              if (payload.eventType === 'INSERT') {
+                if (payload.new.user_id !== user.id) return; // Skip inserts from other users
+                setBookmarks((prev) => {
+                  if (prev.some((item) => item.id === payload.new.id)) return prev;
+                  const updated = [payload.new, ...prev];
+                  saveCache(updated);
+                  return updated;
+                });
+              } else if (payload.eventType === 'DELETE') {
+                // Delete event payload only has payload.old.id
+                setBookmarks((prev) => {
+                  const updated = prev.filter((item) => item.id !== payload.old.id);
+                  saveCache(updated);
+                  return updated;
+                });
+              } else if (payload.eventType === 'UPDATE') {
+                if (payload.new.user_id !== user.id) return; // Skip updates from other users
+                setBookmarks((prev) => {
+                  const updated = prev.map((item) => (item.id === payload.new.id ? payload.new : item));
+                  saveCache(updated);
+                  return updated;
+                });
+              }
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.log('Subscription setup error:', err);
+      }
+    };
+
+    setupSubscription();
 
     return () => {
-      supabase.removeChannel(subscription);
+      isSubscribed = false;
+      if (activeChannel) {
+        supabase.removeChannel(activeChannel);
+      }
     };
   }, []);
 
