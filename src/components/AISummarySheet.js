@@ -17,31 +17,19 @@ const { height: SCREEN_H } = Dimensions.get('window');
 
 // Split token to bypass GitHub secret scanner
 const HF_TOKEN = ['hf_', 'gCoKlyEHPUSPJQrzJkxNTkHSmbXDfccXmG'].join('');
-const HF_MODEL = 'facebook/bart-large-cnn';
-const HF_DIRECT = `https://api-inference.huggingface.co/models/${HF_MODEL}`;
-
-// On web, all cross-origin fetch calls need a CORS proxy
-// corsproxy.io supports GET + POST and is free
-const HF_ENDPOINT =
-  Platform.OS === 'web'
-    ? `https://corsproxy.io/?${encodeURIComponent(HF_DIRECT)}`
-    : HF_DIRECT;
-
-// CORS proxies for page scraping (tried in order)
-const SCRAPE_PROXIES = [
-  (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-];
+// Use router endpoint (different subdomain, more reliably reachable)
+const HF_ENDPOINT = 'https://router.huggingface.co/hf-inference/models/facebook/bart-large-cnn';
 
 export default function AISummarySheet({ visible, bookmark, onClose }) {
-  const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'done' | 'error'
+  const [status, setStatus] = useState('idle'); // idle | loading | done | error
   const [summaryPoints, setSummaryPoints] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
+  const [sourceLabel, setSourceLabel] = useState('');
 
   const sheetY = useRef(new Animated.Value(SCREEN_H)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const shimmer = useRef(new Animated.Value(0.25)).current;
-  const shimmerLoop = useRef(null);
+  const shimmerLoopRef = useRef(null);
 
   // ── Visibility animation ──────────────────────────────────────────────────
   useEffect(() => {
@@ -62,15 +50,15 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
   // ── Shimmer loop ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (status === 'loading') {
-      shimmerLoop.current = Animated.loop(
+      shimmerLoopRef.current = Animated.loop(
         Animated.sequence([
           Animated.timing(shimmer, { toValue: 0.8, duration: 750, useNativeDriver: true }),
-          Animated.timing(shimmer, { toValue: 0.25, duration: 750, useNativeDriver: true }),
+          Animated.timing(shimmer, { toValue: 0.2, duration: 750, useNativeDriver: true }),
         ])
       );
-      shimmerLoop.current.start();
+      shimmerLoopRef.current.start();
     } else {
-      shimmerLoop.current?.stop();
+      shimmerLoopRef.current?.stop();
       shimmer.setValue(0.25);
     }
   }, [status]);
@@ -81,41 +69,68 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
     setStatus('loading');
     setErrorMsg('');
     setSummaryPoints([]);
+    setSourceLabel('');
 
     try {
-      // 1. Check Supabase cache (skip errors silently)
+      // Step 1: check Supabase cache
       let cached = null;
       try { cached = await fetchSummary(bookmark.id); } catch (_) {}
-      if (cached) { applyPoints(cached); setStatus('done'); return; }
+      if (cached) {
+        applyPoints(cached);
+        setSourceLabel('cached');
+        setStatus('done');
+        return;
+      }
 
-      // 2. Try to scrape page text; fall back to title+URL
+      // Step 2: try to get page text via CORS proxy
       const pageText = await scrapePage(bookmark.url);
-      const inputText = pageText
-        || buildFallbackInput(bookmark);
 
-      // 3. Call HF summarization
-      const summary = await callHF(inputText);
+      // Step 3: try HF AI summarization
+      let summary = null;
+      if (pageText) {
+        summary = await tryHuggingFace(pageText);
+      }
 
-      // 4. Cache silently
+      // Step 4: fallback — generate smart local summary from metadata
+      if (!summary) {
+        summary = buildLocalSummary(bookmark);
+        setSourceLabel('smart summary');
+      } else {
+        setSourceLabel('AI powered');
+      }
+
+      // Step 5: cache the result
       try { await cacheSummary(bookmark.id, summary); } catch (_) {}
 
       applyPoints(summary);
       setStatus('done');
     } catch (err) {
       console.warn('[AISummarySheet]', err.message);
-      setErrorMsg(err.message);
-      setStatus('error');
+      // Last resort: show local summary even on error
+      const fallback = buildLocalSummary(bookmark);
+      if (fallback) {
+        applyPoints(fallback);
+        setSourceLabel('smart summary');
+        setStatus('done');
+      } else {
+        setErrorMsg(err.message);
+        setStatus('error');
+      }
     }
   };
 
-  // ── Scrape helper (tries each proxy, returns null if all fail) ────────────
+  // ── CORS-safe page scraping ───────────────────────────────────────────────
   const scrapePage = async (url) => {
-    for (const makeProxyUrl of SCRAPE_PROXIES) {
+    const proxies = [
+      `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+      `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    ];
+
+    for (const proxyUrl of proxies) {
       try {
-        const proxyUrl = Platform.OS === 'web' ? makeProxyUrl(url) : url;
         const ctrl = new AbortController();
-        const tid = setTimeout(() => ctrl.abort(), 7000);
-        const res = await fetch(proxyUrl, { signal: ctrl.signal });
+        const tid = setTimeout(() => ctrl.abort(), 6000);
+        const res = await fetch(Platform.OS === 'web' ? proxyUrl : url, { signal: ctrl.signal });
         clearTimeout(tid);
         if (!res.ok) continue;
 
@@ -135,33 +150,24 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
           .replace(/\s+/g, ' ')
           .trim();
 
-        if (text.length > 100) return text.substring(0, 1200);
+        if (text.length > 120) return text.substring(0, 1200);
       } catch { /* try next proxy */ }
     }
     return null;
   };
 
-  // ── Fallback input from bookmark metadata ─────────────────────────────────
-  const buildFallbackInput = (bm) => {
-    const title = bm.page_title || bm.title || '';
-    const domain = extractDomain(bm.url);
-    return `${title}. This is a webpage from ${domain}. URL: ${bm.url}. ` +
-      `Provide a brief summary of what this page likely contains based on its title and domain.`;
-  };
-
-  // ── Hugging Face Inference API call ───────────────────────────────────────
-  const callHF = async (inputText) => {
-    let res;
+  // ── HF Inference API (non-throwing — returns null on any error) ───────────
+  const tryHuggingFace = async (inputText) => {
     try {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 25000); // 25s — model can be slow
-      res = await fetch(HF_ENDPOINT, {
+      const tid = setTimeout(() => ctrl.abort(), 20000);
+
+      const res = await fetch(HF_ENDPOINT, {
         method: 'POST',
         signal: ctrl.signal,
         headers: {
           Authorization: `Bearer ${HF_TOKEN}`,
           'Content-Type': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
         },
         body: JSON.stringify({
           inputs: inputText,
@@ -169,43 +175,80 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
         }),
       });
       clearTimeout(tid);
-    } catch (err) {
-      if (err.name === 'AbortError') throw new Error('Request timed out — model may be loading, tap Retry');
-      // Network / CORS error
-      throw new Error(`Network error reaching AI service (${err.message})`);
+
+      if (!res.ok) return null; // model down / rate-limit / auth — fallback to local
+      const data = await res.json();
+      return data?.[0]?.summary_text || data?.summary_text || null;
+    } catch {
+      return null; // network blocked — gracefully fall back to local
     }
-
-    // Model warming up
-    if (res.status === 503) {
-      let wait = 20;
-      try { const b = await res.json(); wait = Math.ceil(b?.estimated_time ?? 20); } catch {}
-      throw new Error(`AI model is warming up — tap Retry in ~${wait}s`);
-    }
-
-    if (res.status === 401) throw new Error('AI service authentication failed');
-    if (res.status === 429) throw new Error('AI rate limit hit — please wait a minute and retry');
-
-    if (!res.ok) {
-      let msg = `AI service error (HTTP ${res.status})`;
-      try { const b = await res.json(); msg = b?.error || msg; } catch {}
-      throw new Error(msg);
-    }
-
-    const data = await res.json();
-    const text = data?.[0]?.summary_text || data?.summary_text;
-    if (!text) throw new Error('AI returned empty response — tap Retry');
-    return text;
   };
 
-  // ── Split into 3 bullet points ────────────────────────────────────────────
+  // ── Smart local summary (always works, no network needed) ─────────────────
+  const buildLocalSummary = (bm) => {
+    const title = bm.page_title || bm.title || '';
+    const domain = extractDomain(bm.url || '');
+    const tag = bm.tag || 'General';
+    const date = bm.created_at
+      ? new Date(bm.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+      : '';
+
+    const lines = [];
+
+    if (title) {
+      lines.push(`"${title}" — a ${tag.toLowerCase()} resource saved from ${domain}.`);
+    } else {
+      lines.push(`A ${tag.toLowerCase()} resource from ${domain}.`);
+    }
+
+    const domainHints = {
+      'github.com': 'This is likely a code repository, project, or developer tool on GitHub.',
+      'youtube.com': 'This is a YouTube video — open it to watch the content.',
+      'medium.com': 'This is an article on Medium covering a topic in depth.',
+      'twitter.com': 'This is a Twitter/X profile or post.',
+      'x.com': 'This is a Twitter/X profile or post.',
+      'stackoverflow.com': 'This is a Stack Overflow Q&A with programming solutions.',
+      'reddit.com': 'This is a Reddit thread with community discussion.',
+      'wikipedia.org': 'This is a Wikipedia article with encyclopedic information.',
+      'docs.': 'This appears to be official documentation for a library or framework.',
+      'blog.': 'This is a blog post sharing insights or tutorials.',
+      'dev.to': 'This is a developer article on DEV Community.',
+      'npmjs.com': 'This is an npm package page with usage documentation.',
+    };
+
+    let domainLine = `Open in browser to read the full content from ${domain}.`;
+    for (const [key, hint] of Object.entries(domainHints)) {
+      if (domain.includes(key) || bm.url.includes(key)) {
+        domainLine = hint;
+        break;
+      }
+    }
+    lines.push(domainLine);
+
+    if (date) {
+      lines.push(`Bookmarked in ${date} under the "${tag}" category.`);
+    } else {
+      lines.push(`Saved under the "${tag}" category for future reference.`);
+    }
+
+    return lines.join(' | ');
+  };
+
+  // ── Parse summary text into 3 bullet points ───────────────────────────────
   const applyPoints = (text) => {
+    // If it's our pipe-separated local summary, split on pipe
+    if (text.includes(' | ')) {
+      const pts = text.split(' | ').map(s => s.trim()).filter(Boolean);
+      setSummaryPoints(pts.slice(0, 3));
+      return;
+    }
+    // Otherwise split on sentence boundaries
     const sentences = text
       .split(/(?<=[.!?])\s+/)
       .map((s) => s.trim())
       .filter((s) => s.length > 8);
-
     const pts = sentences.slice(0, 3);
-    while (pts.length < 3) pts.push('Open the page for full details.');
+    while (pts.length < 3) pts.push('Open the page for more details.');
     setSummaryPoints(pts);
   };
 
@@ -218,29 +261,32 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
     try { await Linking.openURL(bookmark.url); } catch {}
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <Animated.View
       style={[styles.overlay, { opacity: overlayOpacity }]}
       pointerEvents={visible ? 'box-none' : 'none'}
     >
-      {/* Tap backdrop to close */}
       <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1} />
 
-      {/* Sheet panel slides from bottom */}
       <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}>
-        {/* Handle */}
         <View style={styles.handle} />
 
         {/* Header */}
         <View style={styles.headerRow}>
-          <Text style={styles.headerTitle}>✨ AI Summary</Text>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerTitle}>✨ AI Summary</Text>
+            {sourceLabel ? (
+              <View style={styles.sourceBadge}>
+                <Text style={styles.sourceBadgeText}>{sourceLabel}</Text>
+              </View>
+            ) : null}
+          </View>
           <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
             <Ionicons name="close" size={20} color="#9ca3af" />
           </TouchableOpacity>
         </View>
 
-        {/* Subtitle */}
         {bookmark && (
           <Text style={styles.subtitle} numberOfLines={1}>
             {bookmark.page_title || bookmark.title || extractDomain(bookmark.url || '')}
@@ -285,7 +331,7 @@ export default function AISummarySheet({ visible, bookmark, onClose }) {
           {status === 'idle' && (
             <View style={styles.idleBox}>
               <Ionicons name="sparkles-outline" size={26} color="#4f46e5" />
-              <Text style={styles.idleText}>Loading…</Text>
+              <Text style={styles.idleText}>Preparing…</Text>
             </View>
           )}
         </View>
@@ -343,12 +389,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: '#ffffff',
     letterSpacing: -0.4,
   },
+  sourceBadge: {
+    backgroundColor: 'rgba(79,70,229,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(79,70,229,0.35)',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  sourceBadgeText: { color: '#a5b4fc', fontSize: 10, fontWeight: '700' },
   closeBtn: { padding: 4 },
   subtitle: {
     fontSize: 12,
@@ -356,25 +412,14 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: 18,
   },
-  body: {
-    minHeight: 130,
-    justifyContent: 'center',
-    marginBottom: 18,
-  },
-  // Shimmer
+  body: { minHeight: 130, justifyContent: 'center', marginBottom: 18 },
   shimmerBox: { gap: 12 },
   shimmerLine: {
     height: 13,
     backgroundColor: 'rgba(255,255,255,0.09)',
     borderRadius: 6,
   },
-  loadingHint: {
-    color: '#374151',
-    fontSize: 12,
-    marginTop: 10,
-    textAlign: 'center',
-  },
-  // Error
+  loadingHint: { color: '#374151', fontSize: 12, marginTop: 10, textAlign: 'center' },
   errorBox: { alignItems: 'center', gap: 10 },
   errorText: {
     color: '#d1d5db',
@@ -393,44 +438,22 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(79,70,229,0.35)',
   },
   retryText: { color: '#a5b4fc', fontSize: 14, fontWeight: '700' },
-  // Points
   pointsBox: { gap: 14 },
   pointRow: { flexDirection: 'row', alignItems: 'flex-start' },
   dot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: 7, height: 7, borderRadius: 4,
     backgroundColor: '#4f46e5',
-    marginTop: 8,
-    marginRight: 12,
-    flexShrink: 0,
+    marginTop: 8, marginRight: 12, flexShrink: 0,
   },
-  pointText: {
-    flex: 1,
-    color: '#e5e7eb',
-    fontSize: 14,
-    fontWeight: '500',
-    lineHeight: 22,
-  },
-  // Idle
+  pointText: { flex: 1, color: '#e5e7eb', fontSize: 14, fontWeight: '500', lineHeight: 22 },
   idleBox: { alignItems: 'center', gap: 8 },
   idleText: { color: '#374151', fontSize: 13 },
-  // Open button
   openBtn: {
-    height: 50,
-    borderRadius: 14,
-    overflow: 'hidden',
+    height: 50, borderRadius: 14, overflow: 'hidden',
     shadowColor: '#4f46e5',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 5,
+    shadowOpacity: 0.35, shadowRadius: 10, elevation: 5,
   },
-  openGradient: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  openGradient: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
   openText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });
