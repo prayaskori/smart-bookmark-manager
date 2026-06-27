@@ -54,7 +54,7 @@ export default function BookmarkListScreen({ navigation }) {
 
   // Bottom Sheet Slide & Opacity animations
   const bottomSheetY = useRef(new Animated.Value(screenHeight)).current;
-  const overlayOpacity = useRef(new Animated.Value(0)).current;
+  const deleteOverlayOpacity = useRef(new Animated.Value(0)).current;
 
   // Offline cache loader
   const loadCache = async () => {
@@ -195,12 +195,10 @@ export default function BookmarkListScreen({ navigation }) {
     setSummaryVisible(true);
   };
 
-  // Open the custom Bottom Sheet dialog
+  // Open the delete confirmation bottom sheet
   const triggerDeleteConfirm = (id) => {
     setDeleteTargetId(id);
     setShowBottomSheet(true);
-
-    // Slide up bottom sheet and fade in background overlay
     Animated.parallel([
       Animated.spring(bottomSheetY, {
         toValue: 0,
@@ -208,7 +206,7 @@ export default function BookmarkListScreen({ navigation }) {
         friction: 8,
         useNativeDriver: true,
       }),
-      Animated.timing(overlayOpacity, {
+      Animated.timing(deleteOverlayOpacity, {
         toValue: 1,
         duration: 250,
         useNativeDriver: true,
@@ -216,7 +214,7 @@ export default function BookmarkListScreen({ navigation }) {
     ]).start();
   };
 
-  // Dismiss Bottom Sheet dialog
+  // Dismiss the delete bottom sheet
   const dismissBottomSheet = () => {
     Animated.parallel([
       Animated.timing(bottomSheetY, {
@@ -224,7 +222,7 @@ export default function BookmarkListScreen({ navigation }) {
         duration: 250,
         useNativeDriver: true,
       }),
-      Animated.timing(overlayOpacity, {
+      Animated.timing(deleteOverlayOpacity, {
         toValue: 0,
         duration: 200,
         useNativeDriver: true,
@@ -401,40 +399,44 @@ export default function BookmarkListScreen({ navigation }) {
         }
       />
 
-      {/* Delete Confirmation Custom Animated Bottom Sheet Overlay */}
-      {showBottomSheet && (
-        <View style={styles.bottomSheetWrapper} pointerEvents="box-none">
-          {/* Fading black background overlay */}
-          <Animated.View
-            style={[styles.bottomSheetOverlay, { opacity: overlayOpacity }]}
-            pointerEvents="auto"
-          >
-            <TouchableOpacity style={StyleSheet.absoluteFill} onPress={dismissBottomSheet} />
-          </Animated.View>
+      {/* Delete Confirmation – always rendered, hidden via pointerEvents + opacity */}
+      <Animated.View
+        style={[
+          styles.deleteSheetWrapper,
+          { opacity: deleteOverlayOpacity },
+        ]}
+        pointerEvents={showBottomSheet ? 'box-none' : 'none'}
+      >
+        {/* Tap dim area to dismiss */}
+        <TouchableOpacity
+          style={StyleSheet.absoluteFill}
+          onPress={dismissBottomSheet}
+          activeOpacity={1}
+        />
 
-          {/* Sliding Card Bottom Sheet */}
-          <Animated.View
-            style={[
-              styles.bottomSheetContainer,
-              { transform: [{ translateY: bottomSheetY }] },
-            ]}
-          >
-            <View style={styles.bottomSheetHandle} />
-            <Text style={styles.bottomSheetTitle}>Delete this bookmark?</Text>
-            <Text style={styles.bottomSheetSub}>This action is permanent and cannot be undone.</Text>
+        {/* Sheet slides up from bottom */}
+        <Animated.View
+          style={[
+            styles.deleteSheetPanel,
+            { transform: [{ translateY: bottomSheetY }] },
+          ]}
+          pointerEvents="box-none"
+        >
+          <View style={styles.bottomSheetHandle} />
+          <Text style={styles.bottomSheetTitle}>Delete this bookmark?</Text>
+          <Text style={styles.bottomSheetSub}>This action is permanent and cannot be undone.</Text>
 
-            <View style={styles.bottomSheetActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={dismissBottomSheet}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
+          <View style={styles.bottomSheetActions}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={dismissBottomSheet} activeOpacity={0.8}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
 
-              <TouchableOpacity style={styles.confirmDeleteBtn} onPress={confirmDelete}>
-                <Text style={styles.confirmDeleteBtnText}>Delete</Text>
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-        </View>
-      )}
+            <TouchableOpacity style={styles.confirmDeleteBtn} onPress={confirmDelete} activeOpacity={0.8}>
+              <Text style={styles.confirmDeleteBtnText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
+      </Animated.View>
 
       {/* AI Summary Bottom Sheet */}
       <AISummarySheet
@@ -623,6 +625,29 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+    backgroundColor: '#13131a',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    paddingHorizontal: 24,
+    paddingBottom: Platform.OS === 'ios' ? 42 : 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 24,
+  },
+  // Delete sheet uses flex layout so buttons are never covered by overlay
+  deleteSheetWrapper: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+  },
+  deleteSheetPanel: {
     backgroundColor: '#13131a',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
