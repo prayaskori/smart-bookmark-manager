@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   logoutButton: {
-    marginRight: 20,
+    marginRight: 28,
     padding: 8,
     justifyContent: 'center',
     alignItems: 'center',

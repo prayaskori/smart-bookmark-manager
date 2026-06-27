@@ -112,7 +112,20 @@ export default function LoginScreen() {
           password: password,
         });
 
-        if (error) throw error;
+        if (error) {
+          if (error.message && error.message.includes('Invalid login credentials')) {
+            Alert.alert(
+              'Password Mismatch',
+              'The password you entered is incorrect or does not match the registered email. Please check your credentials and try again.'
+            );
+          } else {
+            Alert.alert(
+              'Authentication Failed',
+              error.message || 'An error occurred during authentication.'
+            );
+          }
+          return;
+        }
       }
     } catch (error) {
       Alert.alert('Authentication Failed', error.message || 'An error occurred during authentication.');
